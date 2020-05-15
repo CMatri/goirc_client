@@ -16,7 +16,9 @@ type IRCClient struct {
 	Nick string
 	Pass string
 	Addr string
+	Server string
 	Port int
+	CurChannel string
 	Socket net.Conn
 	IRCTui
 }
@@ -28,7 +30,35 @@ type IRCTui struct {
 }
 
 func (c *IRCClient) Send(data string) {
-	fmt.Fprintf(c.Socket, data)
+	var toSend string
+	if data[0] == '/' {
+		spl := strings.Split(data[1:], " ")
+		cmd := strings.ToLower(spl[0])
+		switch cmd {
+		case "join":
+			c.CurChannel = spl[1]
+			toSend = "JOIN " + spl[1]
+		case "msg":
+			msg := data[3 + len(cmd) + len(c.Nick):]
+			c.UIchannel <- "You whisper to " + spl[1] + ": " + msg
+			toSend = "PRIVMSG " + spl[1] + " :" + msg
+		case "quit":
+			toSend = "QUIT"
+		default:
+			c.UIchannel <- "Unknown command \"" + cmd + "\"."
+		}
+	} else {
+		if c.CurChannel == "" {
+			c.UIchannel <- "You haven't joined any channels yet. Use /join #example."
+		} else {
+			c.UIchannel <- c.Nick + ": " + data
+			toSend = "PRIVMSG " + c.CurChannel + " " + data
+		}
+	}
+
+	if toSend != "" {
+		fmt.Fprintf(c.Socket, toSend + "\r\n")
+	}
 }
 
 func (c *IRCClient) Receive() {
@@ -42,14 +72,15 @@ func (c *IRCClient) Receive() {
 		}
 
 		line := string(ba)
+		if c.Server == "" && strings.Contains(line, "001") {
+			c.Server = strings.Split(line, "001")[0][1:]
+			c.UIchannel <- "Put on server " + c.Server
+		}
 
-		if strings.Contains(line, "PING") {
-			fmt.Fprintf(c.Socket, "PONG :" + strings.Split(line, ":")[1] + "\r\n")
-		} else if strings.Contains(line, "ERROR") {
+		if strings.Contains(line, "ERROR") {
 			break
 		} else {
-			c.UIchannel <- line
-			//fmt.Println(line)
+			c.HandleResponse(line)
 		}
 	}
 
@@ -72,7 +103,7 @@ func (c *IRCClient) dump_buf() {
 }
 
 func (c *IRCClient) RegisterUser() {
-	c.Send("PASS " + c.Pass + "\r\nUSER " + c.User + " * * :" + c.User + "\r\nNICK " + c.Nick + "\r\n")
+	fmt.Fprintf(c.Socket, "PASS " + c.Pass + "\r\nUSER " + c.User + " * * :" + c.User + "\r\nNICK " + c.Nick + "\r\n")
 }
 
 func (c *IRCClient) InitiateConnection() {
@@ -111,9 +142,10 @@ func (t *IRCClient) BuildUI() {
 	})
 
 	input.OnSubmit(func(e *tui.Entry) {
-		t.Send(e.Text() + "\r\n")
-		t.History.Append(tui.NewHBox(tui.NewLabel(e.Text())))
-		input.SetText("")
+		if len(e.Text()) > 0 {
+			t.Send(e.Text())
+			input.SetText("")
+		}
 	})
 	
 	go func() {
@@ -130,5 +162,51 @@ func (t *IRCClient) BuildUI() {
 		ui.Update(func() {
 			t.History.Append(tui.NewHBox(tui.NewLabel(val)))
 		})
+	}
+}
+
+func (c *IRCClient) HandleResponse(data string) {
+	if strings.HasPrefix(data, "PING") {
+		fmt.Fprintf(c.Socket, "PONG " + data[5:] + "\r\n")
+		return
+	}
+
+	spl := strings.Split(data, ":")
+	if len(spl) > 2 {
+		prefix := spl[1]
+		postfix := spl[2]
+		key := strings.Split(prefix, " ")[1]
+
+		if code, err := strconv.Atoi(key); err == nil {
+			switch code {
+			case 001: fallthrough
+			case 002: fallthrough
+			case 003: fallthrough
+			case 004: fallthrough
+			case 005: fallthrough
+			case 006:
+				c.UIchannel <- postfix
+			case 479:
+				c.UIchannel <- "Illegal channel name."
+			}
+		} else {
+			fromNick := strings.Split(prefix, "!")[0]
+			if key == "NOTICE" {
+				c.UIchannel <- postfix
+			} else if key == "JOIN" {
+				c.UIchannel <- fromNick + " joined " + postfix
+			} else if key == "NICK" {
+				c.UIchannel <- fromNick + " is now " + postfix
+			} else if key == "PRIVMSG" {
+				to := strings.Split(strings.Split(prefix, "PRIVMSG")[1], " ")[1]
+				if to == c.Nick {
+					c.UIchannel <- fromNick + " whispers to you: " + postfix
+				} else {
+					c.UIchannel <- to + " (" + fromNick + "): " + postfix
+				}
+			} else {
+				c.UIchannel <- data 
+			}
+		}
 	}
 }

@@ -7,7 +7,10 @@ import (
 	"fmt"
 )
 
+func b() {}
+
 func main() {
+
 	args := os.Args[1:]
 
 	if len(args) != 5 && len(args) != 4 {
