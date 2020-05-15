@@ -191,20 +191,21 @@ func (c *IRCClient) HandleResponse(data string) {
 			}
 		} else {
 			fromNick := strings.Split(prefix, "!")[0]
-			if key == "NOTICE" {
+			switch key {
+			case "NOTICE":
 				c.UIchannel <- postfix
-			} else if key == "JOIN" {
+			case "JOIN":
 				c.UIchannel <- fromNick + " joined " + postfix
-			} else if key == "NICK" {
+			case "NICK":
 				c.UIchannel <- fromNick + " is now " + postfix
-			} else if key == "PRIVMSG" {
+			case "PRIVMSG":
 				to := strings.Split(strings.Split(prefix, "PRIVMSG")[1], " ")[1]
 				if to == c.Nick {
 					c.UIchannel <- fromNick + " whispers to you: " + postfix
 				} else {
 					c.UIchannel <- to + " (" + fromNick + "): " + postfix
 				}
-			} else {
+			default:
 				c.UIchannel <- data 
 			}
 		}
