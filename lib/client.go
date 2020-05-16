@@ -27,6 +27,29 @@ type IRCTui struct {
 	UIchannel chan string
 	Sidebar *tui.Box
 	History *tui.Box
+	Entries []string
+	EntryIdx int
+}
+
+func (t *IRCTui) GetHistory(up bool) string {
+	if up && t.EntryIdx > 0 {
+		t.EntryIdx -= 1
+		return t.Entries[t.EntryIdx]
+	} else if !up && t.EntryIdx < len(t.Entries) - 1 {
+		t.EntryIdx += 1
+		return t.Entries[t.EntryIdx]
+	}
+
+	if up {
+		return t.Entries[t.EntryIdx]
+	} else {
+		return ""
+	}
+}
+
+func (t *IRCTui) PushHistory(line string) {
+	t.Entries = append(t.Entries, line)
+	t.EntryIdx = len(t.Entries)
 }
 
 func (c *IRCClient) Send(data string) {
@@ -35,6 +58,8 @@ func (c *IRCClient) Send(data string) {
 		spl := strings.Split(data[1:], " ")
 		cmd := strings.ToLower(spl[0])
 		switch cmd {
+		//case "list": TODO: fix this
+		//	toSend = "LIST"
 		case "join":
 			c.CurChannel = spl[1]
 			toSend = "JOIN " + spl[1]
@@ -52,7 +77,7 @@ func (c *IRCClient) Send(data string) {
 			c.UIchannel <- "You haven't joined any channels yet. Use /join #example."
 		} else {
 			c.UIchannel <- c.Nick + ": " + data
-			toSend = "PRIVMSG " + c.CurChannel + " " + data
+			toSend = "PRIVMSG " + c.CurChannel + " :" + data
 		}
 	}
 
@@ -136,15 +161,25 @@ func (t *IRCClient) BuildUI() {
 	chat.SetSizePolicy(tui.Expanding, tui.Expanding)
 	root := tui.NewHBox(t.Sidebar, chat)
 	ui, _ := tui.New(root)
+
 	ui.SetKeybinding("Esc", func() { 
 		ui.Quit()
 		close(t.UIchannel)
 	})
 
+	ui.SetKeybinding("Up", func() { 
+		input.SetText(t.GetHistory(true))
+	})
+
+	ui.SetKeybinding("Down", func() {
+		input.SetText(t.GetHistory(false))
+	})
+
 	input.OnSubmit(func(e *tui.Entry) {
 		if len(e.Text()) > 0 {
 			t.Send(e.Text())
-			input.SetText("")
+			t.PushHistory(e.Text())
+			input.SetText("") 
 		}
 	})
 	
@@ -175,38 +210,45 @@ func (c *IRCClient) HandleResponse(data string) {
 	if len(spl) > 2 {
 		prefix := spl[1]
 		postfix := spl[2]
-		key := strings.Split(prefix, " ")[1]
+		preSpl := strings.Split(prefix, " ")
 
-		if code, err := strconv.Atoi(key); err == nil {
-			switch code {
-			case 001: fallthrough
-			case 002: fallthrough
-			case 003: fallthrough
-			case 004: fallthrough
-			case 005: fallthrough
-			case 006:
-				c.UIchannel <- postfix
-			case 479:
-				c.UIchannel <- "Illegal channel name."
-			}
-		} else {
-			fromNick := strings.Split(prefix, "!")[0]
-			switch key {
-			case "NOTICE":
-				c.UIchannel <- postfix
-			case "JOIN":
-				c.UIchannel <- fromNick + " joined " + postfix
-			case "NICK":
-				c.UIchannel <- fromNick + " is now " + postfix
-			case "PRIVMSG":
-				to := strings.Split(strings.Split(prefix, "PRIVMSG")[1], " ")[1]
-				if to == c.Nick {
-					c.UIchannel <- fromNick + " whispers to you: " + postfix
-				} else {
-					c.UIchannel <- to + " (" + fromNick + "): " + postfix
+		if len(preSpl) > 1 {
+			key := preSpl[1]
+
+			if code, err := strconv.Atoi(key); err == nil {
+				switch code {
+				case 001: fallthrough // welcome
+				case 002: fallthrough
+				case 003: fallthrough
+				case 004: fallthrough
+				case 005:
+					c.UIchannel <- postfix
+				case 322: // list (not working)
+					//for _, el := range strings.Split(postfix, "\n") { 
+					//	c.UIchannel <- el + "\n\n"
+					//}
+				case 479: // join
+					c.UIchannel <- "Illegal channel name."
 				}
-			default:
-				c.UIchannel <- data 
+			} else {
+				fromNick := strings.Split(prefix, "!")[0]
+				switch key {
+				case "NOTICE":
+					c.UIchannel <- postfix
+				case "JOIN":
+					c.UIchannel <- fromNick + " joined " + postfix
+				case "NICK":
+					c.UIchannel <- fromNick + " is now " + postfix
+				case "PRIVMSG":
+					to := strings.Split(strings.Split(prefix, "PRIVMSG")[1], " ")[1]
+					if to == c.Nick {
+						c.UIchannel <- fromNick + " whispers to you: " + postfix
+					} else {
+						c.UIchannel <- to + " (" + fromNick + "): " + postfix
+					}
+				default:
+					c.UIchannel <- data 
+				}
 			}
 		}
 	}
