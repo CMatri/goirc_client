@@ -8,7 +8,6 @@ import (
 	"bufio"
 	"strings"
 	"io"
-	"github.com/marcusolsson/tui-go"
 )
 
 type IRCClient struct {
@@ -23,66 +22,51 @@ type IRCClient struct {
 	IRCTui
 }
 
-type IRCTui struct {
-	UIchannel chan string
-	Sidebar *tui.Box
-	History *tui.Box
-	Entries []string
-	EntryIdx int
-}
+func (c *IRCClient) Send() {
+	for {
+		data, ok := <-c.ClientChannel
 
-func (t *IRCTui) GetHistory(up bool) string {
-	if up && t.EntryIdx > 0 {
-		t.EntryIdx -= 1
-		return t.Entries[t.EntryIdx]
-	} else if !up && t.EntryIdx < len(t.Entries) - 1 {
-		t.EntryIdx += 1
-		return t.Entries[t.EntryIdx]
-	}
-
-	if up {
-		return t.Entries[t.EntryIdx]
-	} else {
-		return ""
-	}
-}
-
-func (t *IRCTui) PushHistory(line string) {
-	t.Entries = append(t.Entries, line)
-	t.EntryIdx = len(t.Entries)
-}
-
-func (c *IRCClient) Send(data string) {
-	var toSend string
-	if data[0] == '/' {
-		spl := strings.Split(data[1:], " ")
-		cmd := strings.ToLower(spl[0])
-		switch cmd {
-		//case "list": TODO: fix this
-		//	toSend = "LIST"
-		case "join":
-			c.CurChannel = spl[1]
-			toSend = "JOIN " + spl[1]
-		case "msg":
-			msg := data[3 + len(cmd) + len(c.Nick):]
-			c.UIchannel <- "You whisper to " + spl[1] + ": " + msg
-			toSend = "PRIVMSG " + spl[1] + " :" + msg
-		case "quit":
-			toSend = "QUIT"
-		default:
-			c.UIchannel <- "Unknown command \"" + cmd + "\"."
+		if !ok {
+			break
 		}
-	} else {
-		if c.CurChannel == "" {
-			c.UIchannel <- "You haven't joined any channels yet. Use /join #example."
+
+		var toSend string
+		if data[0] == '/' {
+			spl := strings.Split(data[1:], " ")
+			cmd := strings.ToLower(spl[0])
+			switch cmd {
+			//case "list": TODO: fix this
+			//	toSend = "LIST"
+			case "join":
+				c.CurChannel = spl[1]
+				toSend = "JOIN " + spl[1]
+			case "names":
+				if c.CurChannel != "" {
+					toSend = "NAMES " + c.CurChannel
+				}
+			case "nick":
+				toSend = "NICK" + spl[1] 
+			case "msg":
+				msg := data[len(spl[1]) + len(cmd) + len(c.Nick) - 1:]
+				c.UIChannel	<- "You whisper to " + spl[1] + ": " + msg
+				toSend = "PRIVMSG " + spl[1] + " :" + msg
+			case "quit":
+				toSend = "QUIT"
+			default:
+				c.UIChannel	<- "Unknown command \"" + cmd + "\"."
+			}
 		} else {
-			c.UIchannel <- c.Nick + ": " + data
-			toSend = "PRIVMSG " + c.CurChannel + " :" + data
+			if c.CurChannel == "" {
+				c.UIChannel	<- "You haven't joined any channels yet. Use /join #example."
+			} else {
+				c.UIChannel	<- c.Nick + ": " + data
+				toSend = "PRIVMSG " + c.CurChannel + " :" + data
+			}
 		}
-	}
 
-	if toSend != "" {
-		fmt.Fprintf(c.Socket, toSend + "\r\n")
+		if toSend != "" {
+			fmt.Fprintf(c.Socket, toSend + "\r\n")
+		}
 	}
 }
 
@@ -99,7 +83,7 @@ func (c *IRCClient) Receive() {
 		line := string(ba)
 		if c.Server == "" && strings.Contains(line, "001") {
 			c.Server = strings.Split(line, "001")[0][1:]
-			c.UIchannel <- "Put on server " + c.Server
+			c.UIChannel <- "Put on server " + c.Server
 		}
 
 		if strings.Contains(line, "ERROR") {
@@ -109,7 +93,8 @@ func (c *IRCClient) Receive() {
 		}
 	}
 
-	close(c.UIchannel)
+	close(c.UIChannel)
+	close(c.ClientChannel)
 }
 
 func (c *IRCClient) dump_buf() {
@@ -143,63 +128,6 @@ func (c *IRCClient) InitiateConnection() {
 	fmt.Println("Success")
 }
 
-func (t *IRCClient) BuildUI() {
-	t.Sidebar = tui.NewVBox(tui.NewLabel("CHANNELS"))
-	t.Sidebar.SetBorder(true)
-	t.History = tui.NewVBox()
-	historyScroll := tui.NewScrollArea(t.History)
-	historyScroll.SetAutoscrollToBottom(true)
-	historyBox := tui.NewVBox(historyScroll)
-	historyBox.SetBorder(true)
-	input := tui.NewEntry()
-	input.SetFocused(true)
-	input.SetSizePolicy(tui.Expanding, tui.Maximum)
-	inputBox := tui.NewHBox(input)
-	inputBox.SetBorder(true)
-	inputBox.SetSizePolicy(tui.Expanding, tui.Maximum)
-	chat := tui.NewVBox(historyBox, inputBox)
-	chat.SetSizePolicy(tui.Expanding, tui.Expanding)
-	root := tui.NewHBox(t.Sidebar, chat)
-	ui, _ := tui.New(root)
-
-	ui.SetKeybinding("Esc", func() { 
-		ui.Quit()
-		close(t.UIchannel)
-	})
-
-	ui.SetKeybinding("Up", func() { 
-		input.SetText(t.GetHistory(true))
-	})
-
-	ui.SetKeybinding("Down", func() {
-		input.SetText(t.GetHistory(false))
-	})
-
-	input.OnSubmit(func(e *tui.Entry) {
-		if len(e.Text()) > 0 {
-			t.Send(e.Text())
-			t.PushHistory(e.Text())
-			input.SetText("") 
-		}
-	})
-	
-	go func() {
-		if err := ui.Run(); err != nil {
-			panic(err)
-		}
-	}()
-
-	for {
-		val, ok := <-t.UIchannel
-		if !ok {
-			break
-		}
-		ui.Update(func() {
-			t.History.Append(tui.NewHBox(tui.NewLabel(val)))
-		})
-	}
-}
-
 func (c *IRCClient) HandleResponse(data string) {
 	if strings.HasPrefix(data, "PING") {
 		fmt.Fprintf(c.Socket, "PONG " + data[5:] + "\r\n")
@@ -221,33 +149,37 @@ func (c *IRCClient) HandleResponse(data string) {
 				case 002: fallthrough
 				case 003: fallthrough
 				case 004: fallthrough
-				case 005:
-					c.UIchannel <- postfix
+				case 005: 
+					c.UIChannel <- postfix
 				case 322: // list (not working)
 					//for _, el := range strings.Split(postfix, "\n") { 
-					//	c.UIchannel <- el + "\n\n"
+					//	c.UIChannel <- el + "\n\n"
 					//}
+				case 353: // RPL_NAMREPLY
+					c.UIChannel <- c.CurChannel + " users: " + postfix
 				case 479: // join
-					c.UIchannel <- "Illegal channel name."
+					c.UIChannel <- "Illegal channel name."
 				}
 			} else {
 				fromNick := strings.Split(prefix, "!")[0]
 				switch key {
+				case "QUIT":
+					c.UIChannel <- fromNick + " has left the chat."
 				case "NOTICE":
-					c.UIchannel <- postfix
+					c.UIChannel <- postfix
 				case "JOIN":
-					c.UIchannel <- fromNick + " joined " + postfix
+					c.UIChannel <- fromNick + " joined " + postfix
 				case "NICK":
-					c.UIchannel <- fromNick + " is now " + postfix
+					c.UIChannel <- fromNick + " is now " + postfix
 				case "PRIVMSG":
 					to := strings.Split(strings.Split(prefix, "PRIVMSG")[1], " ")[1]
 					if to == c.Nick {
-						c.UIchannel <- fromNick + " whispers to you: " + postfix
+						c.UIChannel <- fromNick + " whispers to you: " + postfix
 					} else {
-						c.UIchannel <- to + " (" + fromNick + "): " + postfix
+						c.UIChannel <- to + " (" + fromNick + "): " + postfix
 					}
 				default:
-					c.UIchannel <- data 
+					c.UIChannel <- data 
 				}
 			}
 		}

@@ -30,17 +30,20 @@ func main() {
 		}
 
 		uiChannel := make(chan string)
+		clientChannel := make(chan string)
 		client := new(lib.IRCClient)
 		client.Addr = args[3]
 		client.Port = port
 		client.User = args[0]
 		client.Nick = args[1]
 		client.Pass = args[2]
-		client.UIchannel = uiChannel
+		client.UIChannel = uiChannel
+		client.ClientChannel = clientChannel
 	
 		client.InitiateConnection()
 		client.RegisterUser()
 		go client.Receive()		
+		go client.Send()
 		client.BuildUI()
 	}
 }
